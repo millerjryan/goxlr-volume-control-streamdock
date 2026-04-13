@@ -30,6 +30,7 @@ A plugin for the **VSDinside N1 Stream Dock** that lets you control any channel 
 │ ▓▓▓▓▓▓▓░░░ │  ← level bar
 └─────────────┘
 ```
+<img width="90" height="58" alt="image" src="https://github.com/user-attachments/assets/05134b38-366f-48bb-b4b5-bdf714fa9a69" />
 
 When muted:
 ```
@@ -42,6 +43,7 @@ When muted:
 │ FADER A MUTED│
 └─────────────┘
 ```
+<img width="74" height="59" alt="image" src="https://github.com/user-attachments/assets/db3f0510-dd5f-4e15-92d3-b75e98a78efb" />
 
 ---
 
