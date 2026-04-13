@@ -1,0 +1,56 @@
+{
+  "Actions": [
+    {
+      "UUID": "com.jomi.goxlrvolumecontrol.adjust",
+      "Icon": "images/action_icon",
+      "Name": "GoXLR Volume",
+      "Tooltip": "Rotate knob to adjust GoXLR channel volume. Press knob to toggle mute on a configurable fader. Displays channel name and live volume on screen.",
+      "Controllers": [
+        "Knob"
+      ],
+      "States": [
+        {
+          "Image": "images/action_icon",
+          "ShowTitle": false
+        }
+      ],
+      "Settings": {
+        "channel": "Headphones",
+        "stepSize": 5,
+        "muteFader": "A",
+        "muteTarget": "MutedToAll",
+        "muteEnabled": true
+      },
+      "UserTitleEnabled": false,
+      "SupportedInMultiActions": false,
+      "PropertyInspectorPath": "inspector.html"
+    }
+  ],
+  "Version": "1.4.0",
+  "Name": "GoXLR Volume Control",
+  "Icon": "images/plugin_icon",
+  "CategoryIcon": "images/category_icon",
+  "Category": "GoXLR",
+  "Description": "Control GoXLR Utility channel volumes using the N1 knob. Press the knob to toggle mute on a configurable fader. Shows channel name and live volume on the display.",
+  "CodePath": "index.html",
+  "SDKVersion": 1,
+  "Author": "Jomi",
+  "URL": "https://github.com/GoXLR-on-Linux/goxlr-utility",
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    },
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.14"
+    }
+  ],
+  "Software": {
+    "MinimumVersion": "2.10.179.426"
+  },
+  "ApplicationsToMonitor": {
+    "windows": ["goxlr-daemon.exe"],
+    "mac": ["goxlr-daemon"]
+  }
+}
