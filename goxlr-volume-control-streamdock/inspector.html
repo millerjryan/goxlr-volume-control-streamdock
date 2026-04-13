@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GoXLR Volume Control – Settings</title>
+  <style>
+    :root {
+      --bg:       #0f1019;
+      --surface:  #181b2a;
+      --surface2: #1f2336;
+      --border:   #2a2f4a;
+      --accent:   #00e5ff;
+      --accent2:  #7c4dff;
+      --red:      #ff4444;
+      --amber:    #ffaa00;
+      --text:     #c8d0e8;
+      --muted:    #5c6480;
+      --radius:   8px;
+      --font:     'Segoe UI', system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 14px;
+    }
+
+    /* ── Header ── */
+    .plugin-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .plugin-header .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+    .plugin-header .dot.online  { background: #44ff88; box-shadow: 0 0 7px #44ff88; }
+    .plugin-header .dot.offline { background: var(--red); }
+    h2 { font-size: 14px; font-weight: 700; color: var(--accent); }
+    .subtitle { color: var(--muted); font-size: 10px; margin-bottom: 14px; margin-left: 20px; }
+
+    /* ── Section cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 11px 12px;
+      margin-bottom: 10px;
+    }
+    .card-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.9px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .card-title::before {
+      content: '';
+      display: block;
+      width: 3px; height: 12px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+    .card-title.mute-title::before { background: var(--red); }
+
+    /* ── Fields ── */
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+
+    label {
+      display: block;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+
+    select {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 7px 28px 7px 10px;
+      outline: none;
+      cursor: pointer;
+      -webkit-appearance: none;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235c6480'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      transition: border-color 0.15s;
+    }
+    select:focus { border-color: var(--accent); }
+    select option { background: var(--surface); }
+
+    /* ── Range ── */
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    input[type="range"] {
+      flex: 1;
+      -webkit-appearance: none;
+      height: 4px;
+      border: none;
+      border-radius: 2px;
+      background: var(--border);
+      cursor: pointer;
+      padding: 0;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 15px; height: 15px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 5px var(--accent);
+      cursor: pointer;
+    }
+    .range-val {
+      min-width: 34px;
+      text-align: right;
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 14px;
+    }
+
+    /* ── Toggle switch ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .toggle-label { color: var(--text); font-size: 12px; }
+    .toggle {
+      position: relative;
+      width: 38px; height: 20px;
+      cursor: pointer;
+    }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      border-radius: 10px;
+      background: var(--border);
+      transition: background 0.2s;
+    }
+    .toggle input:checked + .toggle-track { background: var(--red); }
+    .toggle-thumb {
+      position: absolute;
+      top: 3px; left: 3px;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform 0.2s;
+      pointer-events: none;
+    }
+    .toggle input:checked ~ .toggle-thumb { transform: translateX(18px); }
+
+    /* ── Preview row ── */
+    .preview-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px 12px;
+    }
+    .preview-channel { font-weight: 700; font-size: 13px; }
+    .preview-vol {
+      font-size: 20px;
+      font-weight: 900;
+      color: var(--accent);
+    }
+
+    /* ── Mute status badge ── */
+    .mute-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      transition: all 0.2s;
+    }
+    .mute-status.muted {
+      border-color: var(--red);
+      color: var(--red);
+      background: #1a0808;
+    }
+    .mute-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    .mute-status.muted .mute-dot { background: var(--red); box-shadow: 0 0 5px var(--red); }
+
+    /* ── Tip ── */
+    .tip {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1.6;
+      margin-top: 6px;
+    }
+    .tip strong { color: var(--accent2); }
+
+    /* ── Disabled overlay ── */
+    .mute-settings {
+      transition: opacity 0.2s;
+    }
+    .mute-settings.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header with live connection status -->
+  <div class="plugin-header">
+    <div class="dot" id="statusDot"></div>
+    <h2>GoXLR Volume Control</h2>
+  </div>
+  <p class="subtitle" id="statusText">Checking GoXLR Utility…</p>
+
+  <!-- ── Volume section ── -->
+  <div class="card">
+    <div class="card-title">Volume Control</div>
+
+    <div class="field">
+      <label>GoXLR Channel</label>
+      <select id="channelSelect">
+        <optgroup label="── Input Channels">
+          <option value="Mic">Mic</option>
+          <option value="LineIn">Line In</option>
+          <option value="Console">Console</option>
+          <option value="System">System</option>
+          <option value="Game">Game</option>
+          <option value="Chat">Chat</option>
+          <option value="Sample">Sample</option>
+          <option value="Music">Music</option>
+        </optgroup>
+        <optgroup label="── Output Channels">
+          <option value="Headphones" selected>Headphones</option>
+          <option value="MicMonitor">Mic Monitor</option>
+          <option value="LineOut">Line Out</option>
+        </optgroup>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Current Volume</label>
+      <div class="preview-row">
+        <span class="preview-channel" id="previewChannel">Headphones</span>
+        <span class="preview-vol"     id="previewVolume">--</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Knob Step Size (% per tick)</label>
+      <div class="range-row">
+        <input type="range" id="stepRange" min="1" max="20" value="5" step="1" />
+        <span class="range-val" id="stepDisplay">5%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Knob press / mute section ── -->
+  <div class="card">
+    <div class="card-title mute-title">Knob Press — Mute Toggle</div>
+
+    <div class="field">
+      <div class="toggle-row">
+        <span class="toggle-label">Enable knob press mute</span>
+        <label class="toggle">
+          <input type="checkbox" id="muteEnabled" checked />
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+      </div>
+    </div>
+
+    <div class="mute-settings" id="muteSettings">
+      <div class="field">
+        <label>Fader to Mute</label>
+        <select id="muteFader">
+          <option value="A">Fader A</option>
+          <option value="B">Fader B</option>
+          <option value="C">Fader C</option>
+          <option value="D">Fader D</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Mute Route</label>
+        <select id="muteTarget">
+          <option value="MutedToAll">Muted to All (full silence)</option>
+          <option value="MutedToX">Muted to X (stream mute only)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Current State</label>
+        <div class="mute-status" id="muteStatus">
+          <div class="mute-dot"></div>
+          <span id="muteStatusText">Unknown</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="tip">
+    <strong>Tip:</strong> Rotate the N1 knob to change volume.
+    Press the knob to toggle the fader between <em>Unmuted</em> and the selected
+    mute route. The display updates live — no lag.
+  </p>
+
+  <script>
+    // ─── SDK boilerplate ──────────────────────────────────────────────────────
+
+    let websocket  = null;
+    let piUUID     = null;
+    let actionInfo = null;
+
+    function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
+      piUUID     = inPropertyInspectorUUID;
+      actionInfo = JSON.parse(inActionInfo);
+
+      websocket = new WebSocket('ws://127.0.0.1:' + inPort);
+
+      websocket.onopen = () => {
+        send({ event: inRegisterEvent, uuid: piUUID });
+        send({ event: 'getSettings', context: piUUID });
+      };
+
+      websocket.onmessage = (evt) => {
+        const data = JSON.parse(evt.data);
+        if (data.event === 'didReceiveSettings') applySettings(data.payload?.settings || {});
+        if (data.event === 'sendToPropertyInspector') handlePluginMsg(data.payload);
+      };
+    }
+
+    function send(obj) {
+      if (websocket && websocket.readyState === WebSocket.OPEN)
+        websocket.send(JSON.stringify(obj));
+    }
+
+    function saveSettings() {
+      const settings = {
+        channel:     document.getElementById('channelSelect').value,
+        stepSize:    parseInt(document.getElementById('stepRange').value),
+        muteFader:   document.getElementById('muteFader').value,
+        muteTarget:  document.getElementById('muteTarget').value,
+        muteEnabled: document.getElementById('muteEnabled').checked,
+      };
+      send({ event: 'setSettings', context: piUUID, payload: settings });
+      updatePreviewChannel();
+
+      // Ask plugin for fresh status
+      send({
+        action:  actionInfo.action,
+        event:   'sendToPlugin',
+        context: piUUID,
+        payload: { event: 'requestStatus' },
+      });
+    }
+
+    function applySettings(s) {
+      if (s.channel)    document.getElementById('channelSelect').value = s.channel;
+      if (s.stepSize)  { document.getElementById('stepRange').value = s.stepSize; document.getElementById('stepDisplay').textContent = s.stepSize + '%'; }
+      if (s.muteFader)  document.getElementById('muteFader').value   = s.muteFader;
+      if (s.muteTarget) document.getElementById('muteTarget').value  = s.muteTarget;
+      if (s.muteEnabled !== undefined)
+        document.getElementById('muteEnabled').checked = s.muteEnabled !== false && s.muteEnabled !== 'false';
+
+      updatePreviewChannel();
+      updateMuteSettingsVisibility();
+      checkGoXLRStatus();
+    }
+
+    function handlePluginMsg(payload) {
+      if (!payload) return;
+
+      if (payload.event === 'statusUpdate') {
+        // Update connection indicator
+        const dot  = document.getElementById('statusDot');
+        const text = document.getElementById('statusText');
+        if (payload.connected) {
+          dot.className  = 'dot online';
+          text.textContent = 'GoXLR Utility connected';
+        } else {
+          dot.className  = 'dot offline';
+          text.textContent = 'GoXLR Utility offline';
+        }
+
+        // Volume preview
+        if (payload.volume !== null && payload.volume !== undefined) {
+          document.getElementById('previewVolume').textContent =
+            Math.round((payload.volume / 255) * 100) + '%';
+        }
+
+        // Mute state for the selected fader
+        if (payload.muteCache) {
+          const fader = document.getElementById('muteFader').value;
+          const ms    = payload.muteCache[fader] || 'Unmuted';
+          updateMuteDisplay(ms);
+        }
+      }
+    }
+
+    // ─── UI helpers ───────────────────────────────────────────────────────────
+
+    function updatePreviewChannel() {
+      const sel = document.getElementById('channelSelect');
+      document.getElementById('previewChannel').textContent =
+        sel.options[sel.selectedIndex]?.text || sel.value;
+    }
+
+    function updateMuteSettingsVisibility() {
+      const enabled = document.getElementById('muteEnabled').checked;
+      document.getElementById('muteSettings').classList.toggle('disabled', !enabled);
+    }
+
+    function updateMuteDisplay(muteState) {
+      const el   = document.getElementById('muteStatus');
+      const text = document.getElementById('muteStatusText');
+      const muted = muteState !== 'Unmuted';
+
+      el.classList.toggle('muted', muted);
+      if (muted) {
+        const label = muteState === 'MutedToAll' ? 'Muted to All' : 'Muted to X (Stream)';
+        text.textContent = '🔇 ' + label;
+      } else {
+        text.textContent = 'Unmuted';
+      }
+    }
+
+    // Direct HTTP status check (for initial load and channel changes)
+    async function checkGoXLRStatus() {
+      try {
+        const resp = await fetch('http://localhost:14564/api/command', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify('GetStatus'),
+        });
+        const data = await resp.json();
+
+        const dot  = document.getElementById('statusDot');
+        const text = document.getElementById('statusText');
+
+        if (data?.Status) {
+          dot.className  = 'dot online';
+          text.textContent = 'GoXLR Utility connected';
+
+          const mixers = Object.keys(data.Status.mixers || {});
+          if (mixers.length) {
+            const mixer   = data.Status.mixers[mixers[0]];
+            const channel = document.getElementById('channelSelect').value;
+            const vol     = mixer?.levels?.volumes?.[channel];
+            if (vol !== undefined)
+              document.getElementById('previewVolume').textContent =
+                Math.round((vol / 255) * 100) + '%';
+
+            // Mute state
+            const fader = document.getElementById('muteFader').value;
+            const ms    = mixer?.fader_status?.[fader]?.mute_state;
+            if (ms !== undefined) updateMuteDisplay(ms);
+          }
+        } else {
+          dot.className  = 'dot offline';
+          text.textContent = 'GoXLR Utility not found';
+        }
+      } catch {
+        document.getElementById('statusDot').className  = 'dot offline';
+        document.getElementById('statusText').textContent = 'GoXLR Utility not running';
+      }
+    }
+
+    // ─── Event listeners ──────────────────────────────────────────────────────
+
+    document.getElementById('channelSelect').addEventListener('change', () => {
+      document.getElementById('previewVolume').textContent = '…';
+      saveSettings();
+      setTimeout(checkGoXLRStatus, 80);
+    });
+
+    document.getElementById('stepRange').addEventListener('input', function () {
+      document.getElementById('stepDisplay').textContent = this.value + '%';
+    });
+    document.getElementById('stepRange').addEventListener('change', saveSettings);
+
+    document.getElementById('muteFader').addEventListener('change', () => {
+      saveSettings();
+      setTimeout(checkGoXLRStatus, 80);
+    });
+
+    document.getElementById('muteTarget').addEventListener('change', saveSettings);
+
+    document.getElementById('muteEnabled').addEventListener('change', () => {
+      updateMuteSettingsVisibility();
+      saveSettings();
+    });
+
+    // Initial load
+    checkGoXLRStatus();
+  </script>
+</body>
+</html>

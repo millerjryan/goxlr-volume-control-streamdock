@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>GoXLR Volume Control Plugin</title>
+</head>
+<body>
+<script>
+/**
+ * GoXLR Volume Control – Stream Dock Plugin v1.4.0
+ * Plugin ID: com.jomi.goxlrvolumecontrol
+ *
+ * Knob rotate  → adjust selected channel volume
+ * Knob press   → toggle mute state on the configured fader
+ *
+ * Display shows: channel name, volume %, and a MUTED badge when active.
+ *
+ * GoXLR Utility API:
+ *   HTTP POST  http://localhost:14564/api/command   (commands)
+ *   WebSocket  ws://localhost:14564/api/websocket   (live patches)
+ */
+
+'use strict';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const GOXLR_API  = 'http://localhost:14564/api/command';
+const GOXLR_WS   = 'ws://localhost:14564/api/websocket';
+const VOLUME_MAX = 255;
+
+// Valid fader names in the GoXLR Utility API
+const FADER_NAMES   = ['A', 'B', 'C', 'D'];
+
+// Valid MuteState values in the GoXLR Utility API
+const MUTE_STATES   = ['MutedToAll', 'MutedToX', 'Unmuted'];
+
+// ─── Plugin state ─────────────────────────────────────────────────────────────
+
+let sdWebSocket   = null;
+let pluginUUID    = null;
+
+// Map<context, { channel, stepSize, muteFader, muteTarget, muteEnabled,
+//                currentVolume, isMuted }>
+const instances   = new Map();
+
+// GoXLR shared state
+let goxlrWs             = null;
+let goxlrMixerId        = null;
+let goxlrVolumeCache    = {};      // channel → 0-255
+let goxlrMuteCache      = {};      // fader   → MuteState string
+let goxlrConnected      = false;
+let goxlrReconnectTimer = null;
+
+// ─── Stream Dock entry point ──────────────────────────────────────────────────
+
+function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, inInfo) {
+  pluginUUID = inPluginUUID;
+
+  sdWebSocket = new WebSocket('ws://127.0.0.1:' + inPort);
+
+  sdWebSocket.addEventListener('open', () => {
+    sdSend({ event: inRegisterEvent, uuid: inPluginUUID });
+    goxlrInit();
+  });
+
+  sdWebSocket.addEventListener('message', (evt) => {
+    try { handleSDEvent(JSON.parse(evt.data)); }
+    catch (e) { console.error('[SD] parse error', e); }
+  });
+
+  sdWebSocket.addEventListener('close', () => console.warn('[SD] closed'));
+  sdWebSocket.addEventListener('error', (e) => console.error('[SD] error', e));
+}
+
+function sdSend(obj) {
+  if (sdWebSocket && sdWebSocket.readyState === WebSocket.OPEN) {
+    sdWebSocket.send(JSON.stringify(obj));
+  }
+}
+
+// ─── Stream Dock event router ─────────────────────────────────────────────────
+
+function handleSDEvent(msg) {
+  switch (msg.event) {
+    case 'willAppear':         return onWillAppear(msg.context, msg.payload);
+    case 'willDisappear':      return onWillDisappear(msg.context);
+    case 'didReceiveSettings': return onDidReceiveSettings(msg.context, msg.payload);
+    case 'dialRotate':         return onDialRotate(msg.context, msg.payload);
+    case 'dialDown':           return onDialDown(msg.context, msg.payload);
+    case 'sendToPlugin':       return onSendToPlugin(msg.context, msg.payload);
+    case 'applicationDidLaunch':
+      setTimeout(goxlrInit, 2000);
+      break;
+    case 'applicationDidTerminate':
+      goxlrConnected = false;
+      instances.forEach((_, ctx) => renderDisplay(ctx));
+      break;
+    default: break;
+  }
+}
+
+// ─── Action lifecycle ─────────────────────────────────────────────────────────
+
+function onWillAppear(context, payload) {
+  const s = payload?.settings || {};
+  instances.set(context, {
+    channel:      s.channel      || 'Headphones',
+    stepSize:     Number(s.stepSize)  || 5,
+    muteFader:    s.muteFader    || 'A',
+    muteTarget:   s.muteTarget   || 'MutedToAll',
+    muteEnabled:  s.muteEnabled !== false,  // default true
+    currentVolume: null,
+    isMuted:      false,
+  });
+
+  syncFromCache(context);
+  renderDisplay(context);
+  sdSend({ event: 'getSettings', context });
+}
+
+function onWillDisappear(context) {
+  instances.delete(context);
+}
+
+function onDidReceiveSettings(context, payload) {
+  const s = payload?.settings || {};
+  const inst = instances.get(context);
+  if (!inst) return;
+
+  if (s.channel    !== undefined) inst.channel    = s.channel;
+  if (s.stepSize   !== undefined) inst.stepSize   = Number(s.stepSize) || inst.stepSize;
+  if (s.muteFader  !== undefined) inst.muteFader  = s.muteFader;
+  if (s.muteTarget !== undefined) inst.muteTarget = s.muteTarget;
+  if (s.muteEnabled !== undefined) inst.muteEnabled = s.muteEnabled !== false && s.muteEnabled !== 'false';
+  instances.set(context, inst);
+
+  syncFromCache(context);
+  renderDisplay(context);
+}
+
+function onSendToPlugin(context, payload) {
+  if (payload?.event === 'requestStatus') {
+    const inst = instances.get(context);
+    if (!inst) return;
+    sdSend({
+      action:  'com.jomi.goxlrvolumecontrol.adjust',
+      event:   'sendToPropertyInspector',
+      context,
+      payload: {
+        event:      'statusUpdate',
+        volume:     inst.currentVolume,
+        isMuted:    inst.isMuted,
+        connected:  goxlrConnected,
+        muteCache:  goxlrMuteCache,
+      },
+    });
+  }
+}
+
+// ─── Knob rotate → volume ─────────────────────────────────────────────────────
+
+function onDialRotate(context, payload) {
+  const inst = instances.get(context);
+  if (!inst) return;
+
+  const ticks   = payload?.ticks ?? 0;
+  if (ticks === 0) return;
+
+  const stepRaw = Math.round((inst.stepSize / 100) * VOLUME_MAX);
+  const current = inst.currentVolume !== null ? inst.currentVolume : 128;
+  const newVol  = Math.max(0, Math.min(VOLUME_MAX, current + ticks * stepRaw));
+
+  inst.currentVolume = newVol;
+  goxlrVolumeCache[inst.channel] = newVol;
+  instances.set(context, inst);
+
+  renderDisplay(context);
+  goxlrSetVolume(inst.channel, newVol);
+}
+
+// ─── Knob press → mute toggle ─────────────────────────────────────────────────
+
+function onDialDown(context, payload) {
+  const inst = instances.get(context);
+  if (!inst || !inst.muteEnabled) return;
+
+  const fader       = inst.muteFader  || 'A';
+  const muteTarget  = inst.muteTarget || 'MutedToAll';
+
+  // Read current mute state from cache; toggle between muted target and Unmuted
+  const currentMuteState = goxlrMuteCache[fader] || 'Unmuted';
+  const isCurrentlyMuted = currentMuteState !== 'Unmuted';
+  const newMuteState     = isCurrentlyMuted ? 'Unmuted' : muteTarget;
+
+  // Optimistic local update
+  goxlrMuteCache[fader] = newMuteState;
+  inst.isMuted = newMuteState !== 'Unmuted';
+  instances.set(context, inst);
+
+  renderDisplay(context);
+  goxlrSetFaderMuteState(fader, newMuteState);
+}
+
+// ─── Display rendering ────────────────────────────────────────────────────────
+
+function pct(raw) { return Math.round((raw / VOLUME_MAX) * 100); }
+
+function renderDisplay(context) {
+  const inst    = instances.get(context);
+  if (!inst) return;
+
+  const channel = inst.channel || 'Headphones';
+  const volRaw  = inst.currentVolume;
+  const volPct  = volRaw !== null ? pct(volRaw) : null;
+  const muted   = inst.isMuted;
+  const online  = goxlrConnected;
+
+  // Always show volume % regardless of mute or connection state.
+  // Offline is indicated by grey arc colour, not by replacing the number.
+  const volText  = volPct !== null ? volPct + '%' : '---';
+
+  // Arc always reflects the actual volume level, even when muted.
+  const fillFrac = volRaw !== null ? volRaw / VOLUME_MAX : 0;
+
+  // ── Colour theme ──────────────────────────────────────────────────────────
+  let accentColor = '#00e5ff';
+  if (!online)          accentColor = '#444866';
+  else if (muted)       accentColor = '#ff4444';
+  else if (volPct !== null) {
+    if (volPct > 80)      accentColor = '#ff4444';
+    else if (volPct > 60) accentColor = '#ffaa00';
+  }
+
+  // ── Level bar geometry ────────────────────────────────────────────────────
+  // Horizontal bar across the bottom: x=6..94, y=84..90 (6px tall)
+  const barX      = 6;
+  const barY      = 84;
+  const barW      = 88;
+  const barH      = 6;
+  const barRadius = 3;
+  const fillW     = Math.max(0, Math.round(barW * fillFrac));
+
+  // ── Channel label: truncate to fit at large size ───────────────────────────
+  // At font-size 14, ~7 chars fit comfortably in 100px width
+  const label = channel.length > 9 ? channel.slice(0, 8) + '…' : channel;
+
+  // ── Mute badge row (shown below bar when muted) ───────────────────────────
+  const muteLine = muted && inst.muteEnabled
+    ? `<text x="50" y="97" text-anchor="middle" dominant-baseline="middle"
+             font-family="Arial,sans-serif" font-size="8" font-weight="700"
+             fill="#ff6666" letter-spacing="0.8">FADER ${inst.muteFader} MUTED</text>`
+    : '';
+
+  // ── SVG: viewBox tall enough to show badge ────────────────────────────────
+  // 100×100 canvas, text layout:
+  //   y=18  channel name  (large, bold)
+  //   y=54  volume %      (very large, heavy)
+  //   y=84–90 level bar
+  //   y=97  mute badge    (only when muted)
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <rect width="100" height="100" fill="#0b0d16" rx="6"/>
+
+  <!-- Channel name -->
+  <text x="50" y="19" text-anchor="middle" dominant-baseline="middle"
+        font-family="Arial,sans-serif" font-size="14" font-weight="700"
+        fill="#c8d0e8" letter-spacing="0.2">${label}</text>
+
+  <!-- Separator line -->
+  <line x1="8" y1="28" x2="92" y2="28" stroke="#1e2338" stroke-width="1"/>
+
+  <!-- Volume percentage – dominant element -->
+  <text x="50" y="57" text-anchor="middle" dominant-baseline="middle"
+        font-family="Arial Black,Arial,sans-serif" font-size="30"
+        font-weight="900" fill="${accentColor}">${volText}</text>
+
+  <!-- Level bar track -->
+  <rect x="${barX}" y="${barY}" width="${barW}" height="${barH}"
+        rx="${barRadius}" fill="#1a1e30"/>
+
+  <!-- Level bar fill -->
+  ${fillW > 0 ? `<rect x="${barX}" y="${barY}" width="${fillW}" height="${barH}"
+        rx="${barRadius}" fill="${accentColor}" opacity="0.9"/>` : ''}
+
+  ${muteLine}
+</svg>`;
+
+  sdSend({
+    event:   'setImage',
+    context,
+    payload: {
+      image:  'data:image/svg+xml;charset=utf8,' + encodeURIComponent(svg),
+      target: 0,
+    },
+  });
+}
+
+function syncFromCache(context) {
+  const inst = instances.get(context);
+  if (!inst) return;
+
+  const cachedVol = goxlrVolumeCache[inst.channel];
+  if (cachedVol !== undefined) inst.currentVolume = cachedVol;
+
+  const cachedMute = goxlrMuteCache[inst.muteFader];
+  if (cachedMute !== undefined) inst.isMuted = cachedMute !== 'Unmuted';
+
+  instances.set(context, inst);
+}
+
+function refreshAllDisplays() {
+  instances.forEach((_, ctx) => {
+    syncFromCache(ctx);
+    renderDisplay(ctx);
+  });
+}
+
+// ─── GoXLR Utility – HTTP API ─────────────────────────────────────────────────
+
+async function goxlrCmd(body) {
+  const resp = await fetch(GOXLR_API, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+async function goxlrFetchStatus() {
+  try {
+    const data   = await goxlrCmd('GetStatus');
+    const mixers = Object.keys(data?.Status?.mixers || {});
+    if (!mixers.length) throw new Error('No mixers found');
+
+    goxlrMixerId  = mixers[0];
+    goxlrConnected = true;
+
+    const mixer = data.Status.mixers[goxlrMixerId];
+
+    // Cache channel volumes
+    const volumes = mixer?.levels?.volumes || {};
+    Object.assign(goxlrVolumeCache, volumes);
+
+    // Cache fader mute states
+    // Status path: mixer.fader_status.{ A|B|C|D }.mute_state
+    const faderStatus = mixer?.fader_status || {};
+    for (const fader of FADER_NAMES) {
+      const ms = faderStatus[fader]?.mute_state;
+      if (ms !== undefined) goxlrMuteCache[fader] = ms;
+    }
+
+    refreshAllDisplays();
+  } catch (e) {
+    console.warn('[GoXLR] GetStatus failed:', e.message);
+    goxlrConnected = false;
+    refreshAllDisplays();
+  }
+}
+
+async function goxlrSetVolume(channel, rawVolume) {
+  if (!goxlrMixerId) {
+    await goxlrFetchStatus();
+    if (!goxlrMixerId) return;
+  }
+  try {
+    const result = await goxlrCmd({
+      Command: [goxlrMixerId, { SetVolume: [channel, rawVolume] }],
+    });
+    if (result?.Error) console.error('[GoXLR] SetVolume error:', result.Error);
+  } catch (e) {
+    console.error('[GoXLR] SetVolume failed:', e.message);
+  }
+}
+
+async function goxlrSetFaderMuteState(fader, muteState) {
+  if (!goxlrMixerId) {
+    await goxlrFetchStatus();
+    if (!goxlrMixerId) return;
+  }
+  try {
+    const result = await goxlrCmd({
+      Command: [goxlrMixerId, { SetFaderMuteState: [fader, muteState] }],
+    });
+    if (result?.Error) console.error('[GoXLR] SetFaderMuteState error:', result.Error);
+  } catch (e) {
+    console.error('[GoXLR] SetFaderMuteState failed:', e.message);
+  }
+}
+
+// ─── GoXLR Utility – WebSocket (live patches) ────────────────────────────────
+
+function goxlrInit() {
+  goxlrCloseWs();
+  goxlrFetchStatus().then(() => goxlrOpenWs());
+}
+
+// Poll via HTTP every 5 seconds as a reliable fallback.
+// This ensures the display always shows a real value even when the
+// WebSocket patch stream hasn't delivered a volume update yet.
+setInterval(() => {
+  if (instances.size > 0) goxlrFetchStatus();
+}, 5000);
+
+function goxlrOpenWs() {
+  try {
+    goxlrWs = new WebSocket(GOXLR_WS);
+
+    goxlrWs.addEventListener('open', () => {
+      console.log('[GoXLR] WS connected');
+      // WS protocol requires an id field; HTTP does not
+      goxlrWs.send(JSON.stringify({ id: 1, data: 'GetStatus' }));
+    });
+
+    goxlrWs.addEventListener('message', (evt) => {
+      try { handleGoXLRMessage(JSON.parse(evt.data)); }
+      catch (e) { console.error('[GoXLR] WS parse error', e); }
+    });
+
+    goxlrWs.addEventListener('error', () => {
+      console.warn('[GoXLR] WS error – retry in 10s');
+      goxlrScheduleReconnect();
+    });
+
+    goxlrWs.addEventListener('close', () => {
+      console.log('[GoXLR] WS closed');
+      goxlrConnected = false;
+    });
+  } catch (e) {
+    console.error('[GoXLR] Cannot open WS:', e.message);
+    goxlrScheduleReconnect();
+  }
+}
+
+function goxlrCloseWs() {
+  if (goxlrWs) { try { goxlrWs.close(); } catch (_) {} goxlrWs = null; }
+  if (goxlrReconnectTimer) { clearTimeout(goxlrReconnectTimer); goxlrReconnectTimer = null; }
+}
+
+function goxlrScheduleReconnect() {
+  if (goxlrReconnectTimer) return;
+  goxlrReconnectTimer = setTimeout(() => { goxlrReconnectTimer = null; goxlrInit(); }, 10000);
+}
+
+function handleGoXLRMessage(msg) {
+  if (msg === 'Ok') return;
+
+  // The GoXLR WS wraps responses in { id, data } — unwrap if present
+  if (msg && typeof msg === 'object' && msg.data !== undefined) {
+    msg = msg.data;
+  }
+
+  if (msg === 'Ok') return;
+
+  // Full status on connect
+  if (msg.Status) {
+    const mixers = Object.keys(msg.Status.mixers || {});
+    if (mixers.length) {
+      goxlrMixerId   = mixers[0];
+      goxlrConnected = true;
+      const mixer    = msg.Status.mixers[goxlrMixerId];
+
+      Object.assign(goxlrVolumeCache, mixer?.levels?.volumes || {});
+
+      const fs = mixer?.fader_status || {};
+      for (const fader of FADER_NAMES) {
+        const ms = fs[fader]?.mute_state;
+        if (ms !== undefined) goxlrMuteCache[fader] = ms;
+      }
+    }
+    refreshAllDisplays();
+    return;
+  }
+
+  // Live JSON Patch events
+  if (Array.isArray(msg.Patch)) {
+    for (const patch of msg.Patch) {
+      const path  = patch.path  || '';
+      const value = patch.value;
+
+      // Volume change: /mixers/<id>/levels/volumes/<Channel>
+      const volMatch = path.match(/^\/mixers\/([^/]+)\/levels\/volumes\/(.+)$/);
+      if (volMatch) {
+        const channel = volMatch[2];
+        goxlrVolumeCache[channel] = value;
+
+        instances.forEach((inst, ctx) => {
+          if (inst.channel === channel) {
+            inst.currentVolume = value;
+            instances.set(ctx, inst);
+            renderDisplay(ctx);
+          }
+        });
+        continue;
+      }
+
+      // Mute state change: /mixers/<id>/fader_status/<Fader>/mute_state
+      const muteMatch = path.match(/^\/mixers\/([^/]+)\/fader_status\/([ABCD])\/mute_state$/);
+      if (muteMatch) {
+        const fader    = muteMatch[2];
+        goxlrMuteCache[fader] = value;
+
+        instances.forEach((inst, ctx) => {
+          if (inst.muteFader === fader) {
+            inst.isMuted = value !== 'Unmuted';
+            instances.set(ctx, inst);
+            renderDisplay(ctx);
+          }
+        });
+      }
+    }
+  }
+}
+
+window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
+</script>
+</body>
+</html>
